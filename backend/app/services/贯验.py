@@ -78,6 +78,17 @@ def 跑贯验() -> dict:
             if w and 时间.解析(w["事件时水位"]) < 时间.解析(房["开播事件时"]):
                 问题.append(f"房{房['房间键']}水位{w['事件时水位']}低于开播事件时{房['开播事件时']}")
 
+        # 水位继承戳协同：切流成功不得继承戳空（每条切流审计须有同世代戳）
+        for a in conn.execute("SELECT 房间键, 切流代次, 切流态 FROM 切流审计").fetchall():
+            戳 = conn.execute(
+                "SELECT 1 FROM 水位继承戳 WHERE 房间键=? AND 切流世代=?",
+                (a["房间键"], a["切流代次"]),
+            ).fetchone()
+            if not 戳:
+                问题.append(
+                    f"房{a['房间键']}切流e{a['切流代次']}({a['切流态']})无同票继承戳——切流成功继承戳空"
+                )
+
         通过 = 1 if not 问题 else 0
         说明 = "窗输出与事件/撤回互证通过" if 通过 else "；".join(问题)[:800]
         conn.execute(

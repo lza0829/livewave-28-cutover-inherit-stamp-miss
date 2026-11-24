@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.db import 夹具目录, 连接
+from app.modules import 水位继承戳 as 继
 from app.services import 装载, 贯验, 目录, 切流
 
 路由 = APIRouter(prefix="/api")
@@ -146,6 +147,8 @@ def 列批次():
 def 做装载(体: 装载请求):
     try:
         return 装载.装一批(体.model_dump())
+    except 继.继承戳错误 as e:
+        raise _失败闭(e) from e
     except sqlite3.OperationalError as e:
         if 切流.是否锁冲突(e):
             raise _失败闭(e) from e
@@ -193,6 +196,8 @@ def 做开播(体: 开播请求):
         return 切流.开播(体.房间键, 体.开播事件时 or None)
     except 切流.切流错误 as e:
         raise _失败闭(e) from e
+    except 继.继承戳错误 as e:
+        raise _失败闭(e) from e
     except sqlite3.OperationalError as e:
         if 切流.是否锁冲突(e):
             raise _失败闭(e) from e
@@ -204,6 +209,8 @@ def 做闭播(体: 闭播请求):
     try:
         return 切流.闭播(体.房间键)
     except 切流.切流错误 as e:
+        raise _失败闭(e) from e
+    except 继.继承戳错误 as e:
         raise _失败闭(e) from e
     except sqlite3.OperationalError as e:
         if 切流.是否锁冲突(e):
@@ -217,11 +224,10 @@ def 空桩():
 
     return modules.列表()
 
-from app.modules import 水位继承戳 as 继
-
 
 @路由.get("/核证/水位继承")
 def 取水位继承(房间键: str | None = None):
+    """水位继承核证只读接口：戳链 + 三硬约束核证 + 四闸协同快照。"""
     conn = 连接()
     try:
         return 继.查继承戳(conn, 房间键)

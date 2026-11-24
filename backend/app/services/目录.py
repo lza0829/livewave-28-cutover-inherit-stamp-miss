@@ -23,6 +23,7 @@ def 总览() -> dict:
             "装载批次": c("SELECT COUNT(*) FROM 装载批次"),
             "切流拒收": c("SELECT COUNT(*) FROM 互动事件 WHERE 命运='切流拒收'"),
             "切流审计": c("SELECT COUNT(*) FROM 切流审计"),
+            "水位继承戳": c("SELECT COUNT(*) FROM 水位继承戳"),
             "末次贯验": dict(末) if 末 else None,
         }
     finally:

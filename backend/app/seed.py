@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS 水位继承戳 (
   时刻 TEXT NOT NULL DEFAULT ''
 );
 
+-- 一脉一戳：同房同世代至多一张继承戳，杜绝戳双值并存
+CREATE UNIQUE INDEX IF NOT EXISTS 索引_水位继承戳_房代 ON 水位继承戳(房间键, 切流世代);
+
 CREATE TABLE IF NOT EXISTS 站规 (
   键 TEXT PRIMARY KEY,
   值 TEXT NOT NULL
@@ -124,12 +127,36 @@ def _迁移(conn) -> None:
     窗列 = _列名(conn, "热度窗")
     if 窗列 and "切流代次" not in 窗列:
         conn.execute("ALTER TABLE 热度窗 ADD COLUMN 切流代次 INTEGER NOT NULL DEFAULT 1")
-    
+
     房 = [r["房间键"] for r in conn.execute("SELECT 房间键 FROM 直播间")]
     for k in 房:
         conn.execute(
             "INSERT OR IGNORE INTO 入流闸(房间键, 开放, 切流代次, 更新处理时) VALUES (?, 1, 1, ?)",
             (k, 此刻()),
+        )
+
+    # 水位继承戳回填（旧快照库无戳）：
+    # 1) 每条历史切流审计补一张同世代戳（开播→重置、闭播→封存），字段照审计落票值；
+    # 2) 当前世代仍无戳的房（直建未经切流）补创世戳，锚点=开播事件时。
+    # 均 INSERT OR IGNORE：已有戳（新代码同票写入）者优先，回填不覆盖事实。
+    for a in conn.execute("SELECT * FROM 切流审计").fetchall():
+        conn.execute(
+            """INSERT OR IGNORE INTO 水位继承戳(房间键,切流世代,切前水位,锚点事件时,继承模式,戳号,时刻)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                a["房间键"], int(a["切流代次"]), a["切流前水位"], a["开播事件时"],
+                "重置" if a["切流态"] == "直播中" else "封存",
+                f"戳-{a['房间键']}-e{int(a['切流代次'])}", a["处理时"],
+            ),
+        )
+    for r in conn.execute(
+        """SELECT z.房间键 AS k, z.切流代次 AS e, f.开播事件时 AS t
+           FROM 入流闸 z JOIN 直播间 f ON f.房间键=z.房间键"""
+    ).fetchall():
+        conn.execute(
+            """INSERT OR IGNORE INTO 水位继承戳(房间键,切流世代,切前水位,锚点事件时,继承模式,戳号,时刻)
+               VALUES (?,?,?,?,?,?,?)""",
+            (r["k"], int(r["e"]), r["t"], r["t"], "创世", f"戳-{r['k']}-e{int(r['e'])}", 此刻()),
         )
 
 
@@ -150,6 +177,15 @@ def 初始化库() -> None:
             "骨架": "互动事件入流→事件时间水位线推进→热度窗关闭发射→迟到修正撤回→窗输出与撤回互证",
         }.items():
             conn.execute("INSERT INTO 站规(键, 值) VALUES (?, ?)", (k, v))
+    conn.execute(
+        "INSERT OR IGNORE INTO 站规(键, 值) VALUES (?, ?)",
+        (
+            "切流继承口径",
+            "继承戳锁模式：切流同票写戳（房间/切流世代/切前水位/锚点事件时/继承模式/戳号），"
+            "戳写重置则从锚点起算、戳写延续则保持切前水位；抬升必须吃本世代戳，"
+            "只改会话字段不换世代则抬升整票拒绝，改模式须新开切流世代重写戳",
+        ),
+    )
     if conn.execute("SELECT COUNT(*) AS c FROM 直播间").fetchone()["c"] == 0:
         conn.execute(
             "INSERT INTO 直播间(房间键, 标题, 主播, 开播事件时, 状态) VALUES (?,?,?,?,?)",
@@ -163,7 +199,11 @@ def 初始化库() -> None:
             "INSERT INTO 入流闸(房间键, 开放, 切流代次, 更新处理时) VALUES (?, 1, 1, ?)",
             ("房A", 此刻()),
         )
-        
+        conn.execute(
+            "INSERT INTO 水位继承戳(房间键,切流世代,切前水位,锚点事件时,继承模式,戳号,时刻) VALUES (?,?,?,?,?,?,?)",
+            ("房A", 1, "2026-11-22T12:00:00Z", "2026-11-22T12:00:00Z", "创世", "戳-房A-e1", 此刻()),
+        )
+
         conn.execute(
             "INSERT INTO 直播间(房间键, 标题, 主播, 开播事件时, 状态) VALUES (?,?,?,?,?)",
             ("房B", "午后小场", "主播小波", "2026-11-22T10:00:00Z", "已闭播"),
@@ -175,6 +215,10 @@ def 初始化库() -> None:
         conn.execute(
             "INSERT INTO 入流闸(房间键, 开放, 切流代次, 更新处理时) VALUES (?, 0, 1, ?)",
             ("房B", 此刻()),
+        )
+        conn.execute(
+            "INSERT INTO 水位继承戳(房间键,切流世代,切前水位,锚点事件时,继承模式,戳号,时刻) VALUES (?,?,?,?,?,?,?)",
+            ("房B", 1, "2026-11-22T10:00:00Z", "2026-11-22T10:00:00Z", "创世", "戳-房B-e1", 此刻()),
         )
     conn.commit()
     conn.close()
